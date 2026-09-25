@@ -5,6 +5,7 @@ import pandas_ta as ta
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import pytz
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Apex Institutional Analyzer", layout="wide", page_icon="🦅")
@@ -13,7 +14,7 @@ st.set_page_config(page_title="Apex Institutional Analyzer", layout="wide", page
 st.markdown("""
 <style>
     .opportunity-card {
-        background-color: #1E1E1E;
+        background-color: #161A1D;
         padding: 25px;
         border-radius: 12px;
         border-left: 6px solid #00FFAA;
@@ -22,14 +23,53 @@ st.markdown("""
     }
     .bearish-card { border-left: 6px solid #FF3366; }
     .neutral-card { border-left: 6px solid #FFCC00; }
+    .dead-zone-card { border-left: 6px solid #555555; opacity: 0.8; }
     .metric-value { font-size: 28px; font-weight: bold; margin-top: 5px; }
     .label { color: #888888; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
     .confluence-list { font-size: 15px; line-height: 1.6; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🦅 Apex Institutional Analyzer")
-st.markdown("Abstracting the retail noise. Displaying pure institutional flow, liquidity grabs, and high-probability setups.")
+# --- SESSION LOGIC ---
+def get_market_session():
+    now_utc = datetime.now(pytz.utc)
+    hour = now_utc.hour
+    
+    session = "Dead Zone / Off Hours"
+    has_volume = False
+    
+    if 12 <= hour < 16:
+        session = "London / NY Overlap"
+        has_volume = True
+    elif 7 <= hour < 12:
+        session = "London Session"
+        has_volume = True
+    elif 16 <= hour < 21:
+        session = "New York Session"
+        has_volume = True
+    elif 23 <= hour or hour < 7:
+        session = "Asian Session"
+        has_volume = False # Generally lower volume for majors/indices
+        
+    return session, has_volume, now_utc.strftime("%H:%M UTC")
+
+session_name, has_volume, utc_time = get_market_session()
+
+# --- TOP BAR ---
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.title("🦅 Apex Institutional Analyzer")
+    st.markdown("Abstracting the retail noise. Displaying pure institutional flow and high-probability setups.")
+with col2:
+    st.markdown(f"""
+    <div style="text-align: right; color: #888888; font-size: 12px; margin-top: 20px;">
+        MARKET SESSION<br>
+        <b style="color: {'#00FFAA' if has_volume else '#FFCC00'}; font-size: 16px;">{session_name}</b><br>
+        UTC {utc_time}
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
 
 # --- ASSETS ---
 tickers = {
@@ -106,6 +146,11 @@ df = load_and_analyze(ticker_symbol, period, tf)
 if df.empty:
     st.error("Market data unavailable. Please try another asset or timeframe.")
 else:
+    # Adjust volume flag for Crypto (always active)
+    if "Crypto" in selected_asset:
+        has_volume = True
+        session_name = "Crypto (24/7)"
+
     current_price = float(df['Close'].iloc[-1])
     atr = float(df['ATRr_14'].iloc[-1])
     sma50 = float(df['SMA_50'].iloc[-1])
@@ -144,10 +189,19 @@ else:
             tp = entry - (atr * 3.0)
             validity = f"Invalidated if price breaks {sl:.4f}"
 
+    # Overwrite if session is dead (Time Filter)
+    if not has_volume and direction != "NO CLEAR EDGE":
+        direction = "SETUP IGNORED (DEAD SESSION)"
+        card_class = "opportunity-card dead-zone-card"
+        status = f"A++ Setup found, but ignored due to low volume ({session_name})."
+        validity = "Wait for London/NY Open"
+
     news_events = check_fundamentals()
-    news_warning = f"⚠️ WARNING: High Impact News Today ({', '.join(news_events)}). Reduce position size." if news_events else "✅ Clear Fundamentals. No red-folder news expected today."
+    news_warning = f"⚠️ WARNING: High Impact News Today ({', '.join(news_events)}). Reduce position size." if news_events else "✅ Fundamental overlay clear. No high-impact events."
 
     # --- UI RENDERING ---
+    st.info(news_warning)
+
     st.markdown(f"""
     <div class="{card_class}">
         <h2 style="margin-top: 0; color: white;">{selected_asset.split('|')[-1].strip()} | {direction}</h2>
@@ -157,15 +211,15 @@ else:
         
         <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
             <div style="margin-right: 20px;">
-                <div class="label">Optimal Entry Zone</div>
+                <div class="label">Entry Zone</div>
                 <div class="metric-value" style="color: white;">{entry:.4f}</div>
             </div>
             <div style="margin-right: 20px;">
-                <div class="label">Target (Liquidity Pool)</div>
+                <div class="label">Target (Liquidity)</div>
                 <div class="metric-value" style="color: #00FFAA;">{tp:.4f}</div>
             </div>
             <div>
-                <div class="label">Stop Loss (Invalidation)</div>
+                <div class="label">Invalidation (SL)</div>
                 <div class="metric-value" style="color: #FF3366;">{sl:.4f}</div>
             </div>
         </div>
@@ -174,23 +228,21 @@ else:
         
         <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
             <div style="margin-right: 20px;">
-                <div class="label" style="margin-bottom: 10px;">Institutional Confluences</div>
+                <div class="label" style="margin-bottom: 10px;">Confluence Matrix</div>
                 <div class="confluence-list" style="color: white;">
                     {'🟢' if direction != 'NO CLEAR EDGE' else '⚪'} Trend & Momentum Alignment<br>
-                    {'🟢' if recent_bull_fvg or recent_bear_fvg else '⚪'} Fair Value Gap (Imbalance)<br>
-                    {'🟢' if recent_bull_ob or recent_bear_ob else '⚪'} Supply/Demand Block<br>
-                    {'🔴' if news_events else '🟢'} Fundamental Clearance
+                    {'🟢' if recent_bull_fvg or recent_bear_fvg else '⚪'} Fair Value Gap Detected<br>
+                    {'🟢' if recent_bull_ob or recent_bear_ob else '⚪'} Demand/Supply Order Block<br>
+                    {'🟢' if has_volume else '🔴'} Market Session Volume
                 </div>
             </div>
             <div style="margin-top: 25px;">
-                <div class="label">Trade Expiry / Validity</div>
-                <div style="font-size: 18px; color: #FFCC00; font-weight: bold; margin-top: 5px;">{validity}</div>
+                <div class="label">Setup Validity</div>
+                <div style="font-size: 18px; color: #888888; margin-top: 5px;">{validity}</div>
             </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
-    
-    st.info(news_warning)
     
     with st.expander("🔍 Developer Mode: View Raw Market Matrix"):
         st.dataframe(df.tail(15))
