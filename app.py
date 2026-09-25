@@ -2,79 +2,195 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
-st.set_page_config(page_title="Prop Firm Analyzer", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Apex Institutional Analyzer", layout="wide", page_icon="🦅")
 
-st.title("📈 Prop Firm Trading Analyzer")
-st.markdown("Free Technical & Fundamental Overview for Forex, Indices, and Crypto")
+# --- CUSTOM CSS FOR SLEEK UI ---
+st.markdown("""
+<style>
+    .opportunity-card {
+        background-color: #1E1E1E;
+        padding: 25px;
+        border-radius: 12px;
+        border-left: 6px solid #00FFAA;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .bearish-card { border-left: 6px solid #FF3366; }
+    .neutral-card { border-left: 6px solid #FFCC00; }
+    .metric-value { font-size: 28px; font-weight: bold; margin-top: 5px; }
+    .label { color: #888888; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+    .confluence-list { font-size: 15px; line-height: 1.6; }
+</style>
+""", unsafe_allow_html=True)
 
-# Sidebar for inputs
-st.sidebar.header("Settings")
+st.title("🦅 Apex Institutional Analyzer")
+st.markdown("Abstracting the retail noise. Displaying pure institutional flow, liquidity grabs, and high-probability setups.")
+
+# --- ASSETS ---
 tickers = {
-    "EUR/USD": "EURUSD=X",
-    "Gold": "GC=F",
-    "Nasdaq 100": "NQ=F",
-    "Bitcoin": "BTC-USD"
+    "Forex | EUR/USD": "EURUSD=X", "Forex | GBP/USD": "GBPUSD=X", "Forex | USD/JPY": "JPY=X", 
+    "Forex | AUD/USD": "AUDUSD=X", "Forex | USD/CAD": "CAD=X", "Forex | USD/CHF": "CHF=X",
+    "Index | Nasdaq 100": "NQ=F", "Index | S&P 500": "ES=F", "Index | Dow Jones": "YM=F", "Index | DAX": "^GDAXI",
+    "Metal | Gold (XAU/USD)": "GC=F", "Metal | Silver (XAG/USD)": "SI=F",
+    "Crypto | Bitcoin": "BTC-USD", "Crypto | Ethereum": "ETH-USD", "Crypto | Solana": "SOL-USD"
 }
-selected_asset = st.sidebar.selectbox("Select Asset", list(tickers.keys()))
-ticker_symbol = tickers[selected_asset]
 
-timeframe = st.sidebar.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=3)
-period = st.sidebar.selectbox("Lookback Period", ["5d", "1mo", "3mo", "1y"], index=1)
-
-# Fetch Data
-@st.cache_data(ttl=300) # Cache for 5 minutes
-def load_data(ticker, period, interval):
-    data = yf.download(ticker, period=period, interval=interval, progress=False)
-    if not data.empty:
-        # Calculate some basic indicators using pandas_ta
-        # We handle multi-index columns from yfinance by flattening if needed, 
-        # or just accessing the standard OHLCV columns.
-        
-        # Flatten yfinance multi-index if it exists (for newer yfinance versions)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-            
-        # Ensure column names are standard for pandas-ta
-        data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
-        
-        # Calculate indicators
-        data.ta.sma(length=20, append=True)
-        data.ta.sma(length=50, append=True)
-        data.ta.rsi(length=14, append=True)
-    return data
-
-st.write(f"### Fetching data for {selected_asset} ({ticker_symbol})")
-
-try:
-    df = load_data(ticker_symbol, period, timeframe)
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("Trade Terminal")
+    selected_asset = st.selectbox("Select Market", list(tickers.keys()))
+    ticker_symbol = tickers[selected_asset]
     
-    if df.empty:
-        st.error("No data found for this asset and timeframe combination.")
-    else:
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.write("#### Recent Price Action")
-            st.dataframe(df.tail(10))
+    trade_style = st.selectbox("Trading Style", ["Scalping (15m)", "Day Trading (1H)", "Swing (4H)", "Positional (1D)"], index=1)
+    
+    timeframe_map = {"Scalping (15m)": "15m", "Day Trading (1H)": "1h", "Swing (4H)": "4h", "Positional (1D)": "1d"}
+    tf = timeframe_map[trade_style]
+    period_map = {"15m": "5d", "1h": "1mo", "4h": "1mo", "1d": "1y"}
+    period = period_map[tf]
+
+# --- ALGORITHMIC ENGINE ---
+@st.cache_data(ttl=300)
+def load_and_analyze(ticker, period, interval):
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
+    if df.empty: return df
+    
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+    
+    df.ta.sma(length=50, append=True)
+    df.ta.sma(length=200, append=True)
+    df.ta.atr(length=14, append=True)
+    
+    df['FVG_Bull'] = False
+    df['FVG_Bear'] = False
+    df['Bull_OB'] = False
+    df['Bear_OB'] = False
+    
+    for i in range(2, len(df)):
+        if df['Low'].iloc[i] > df['High'].iloc[i-2] and df['Close'].iloc[i-1] > df['Open'].iloc[i-1]:
+            df.iat[i, df.columns.get_loc('FVG_Bull')] = True
+        if df['High'].iloc[i] < df['Low'].iloc[i-2] and df['Close'].iloc[i-1] < df['Open'].iloc[i-1]:
+            df.iat[i, df.columns.get_loc('FVG_Bear')] = True
             
-        with col2:
-            st.write("#### Bias Analysis")
-            # Very basic bias calculation
-            current_price = df['Close'].iloc[-1]
-            sma_20 = df['SMA_20'].iloc[-1]
-            sma_50 = df['SMA_50'].iloc[-1]
+        if i >= 3:
+            atr = df['ATRr_14'].iloc[i-1]
+            body_curr = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
+            if df['Close'].iloc[i-1] < df['Open'].iloc[i-1] and df['Close'].iloc[i] > df['Open'].iloc[i] and body_curr > atr:
+                df.iat[i-1, df.columns.get_loc('Bull_OB')] = True
+            if df['Close'].iloc[i-1] > df['Open'].iloc[i-1] and df['Close'].iloc[i] < df['Open'].iloc[i] and body_curr > atr:
+                df.iat[i-1, df.columns.get_loc('Bear_OB')] = True
+
+    return df
+
+@st.cache_data(ttl=3600)
+def check_fundamentals():
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+        response = requests.get(url, timeout=5)
+        root = ET.fromstring(response.content)
+        today = datetime.now().strftime("%m-%d-%Y")
+        high_impact = [child.find('title').text for child in root.findall('event') if child.find('impact').text == "High" and child.find('date').text == today]
+        return high_impact
+    except:
+        return []
+
+# --- EXECUTION LOGIC ---
+df = load_and_analyze(ticker_symbol, period, tf)
+
+if df.empty:
+    st.error("Market data unavailable. Please try another asset or timeframe.")
+else:
+    current_price = float(df['Close'].iloc[-1])
+    atr = float(df['ATRr_14'].iloc[-1])
+    sma50 = float(df['SMA_50'].iloc[-1])
+    sma200 = float(df['SMA_200'].iloc[-1])
+    
+    recent_bull_fvg = df['FVG_Bull'].iloc[-15:].any()
+    recent_bear_fvg = df['FVG_Bear'].iloc[-15:].any()
+    recent_bull_ob = df['Bull_OB'].iloc[-15:].any()
+    recent_bear_ob = df['Bear_OB'].iloc[-15:].any()
+    
+    direction = "NO CLEAR EDGE"
+    card_class = "neutral-card"
+    status = "Sitting on hands. Waiting for liquidity sweep."
+    entry = current_price
+    sl = 0.0
+    tp = 0.0
+    validity = "N/A"
+    
+    if current_price > sma50 and current_price > sma200:
+        if recent_bull_fvg or recent_bull_ob:
+            direction = "HIGH PROBABILITY LONG (BUY)"
+            card_class = "opportunity-card"
+            status = "Setup Validated. Awaiting Entry Trigger."
+            entry = current_price - (atr * 0.4) 
+            sl = entry - (atr * 1.5) 
+            tp = entry + (atr * 3.0) 
+            validity = f"Invalidated if price breaks {sl:.4f}"
             
-            bias = "Neutral"
-            if current_price > sma_20 and sma_20 > sma_50:
-                bias = "Bullish 🟢"
-            elif current_price < sma_20 and sma_20 < sma_50:
-                bias = "Bearish 🔴"
-                
-            st.metric(label="Current Trend Bias (20/50 SMA)", value=bias)
-            st.metric(label="Current Price", value=f"{current_price:.4f}")
-            st.metric(label="RSI (14)", value=f"{df['RSI_14'].iloc[-1]:.2f}")
+    elif current_price < sma50 and current_price < sma200:
+        if recent_bear_fvg or recent_bear_ob:
+            direction = "HIGH PROBABILITY SHORT (SELL)"
+            card_class = "opportunity-card bearish-card"
+            status = "Setup Validated. Awaiting Entry Trigger."
+            entry = current_price + (atr * 0.4)
+            sl = entry + (atr * 1.5)
+            tp = entry - (atr * 3.0)
+            validity = f"Invalidated if price breaks {sl:.4f}"
+
+    news_events = check_fundamentals()
+    news_warning = f"⚠️ WARNING: High Impact News Today ({', '.join(news_events)}). Reduce position size." if news_events else "✅ Clear Fundamentals. No red-folder news expected today."
+
+    # --- UI RENDERING ---
+    st.markdown(f"""
+    <div class="{card_class}">
+        <h2 style="margin-top: 0; color: white;">{selected_asset.split('|')[-1].strip()} | {direction}</h2>
+        <div style="color: #CCCCCC; margin-bottom: 25px; font-size: 16px;">
+            <b>Style:</b> {trade_style} &nbsp;•&nbsp; <b>Status:</b> {status}
+        </div>
         
-        st.info("🚧 In the next iterations, we will add Order Blocks, Fair Value Gaps, Volume Profile, and Fundamental News parsing here.")
-except Exception as e:
-    st.error(f"Error loading data: {e}")
+        <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+            <div style="margin-right: 20px;">
+                <div class="label">Optimal Entry Zone</div>
+                <div class="metric-value" style="color: white;">{entry:.4f}</div>
+            </div>
+            <div style="margin-right: 20px;">
+                <div class="label">Target (Liquidity Pool)</div>
+                <div class="metric-value" style="color: #00FFAA;">{tp:.4f}</div>
+            </div>
+            <div>
+                <div class="label">Stop Loss (Invalidation)</div>
+                <div class="metric-value" style="color: #FF3366;">{sl:.4f}</div>
+            </div>
+        </div>
+        
+        <hr style="border-color: #444; margin: 25px 0;">
+        
+        <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
+            <div style="margin-right: 20px;">
+                <div class="label" style="margin-bottom: 10px;">Institutional Confluences</div>
+                <div class="confluence-list" style="color: white;">
+                    {'🟢' if direction != 'NO CLEAR EDGE' else '⚪'} Trend & Momentum Alignment<br>
+                    {'🟢' if recent_bull_fvg or recent_bear_fvg else '⚪'} Fair Value Gap (Imbalance)<br>
+                    {'🟢' if recent_bull_ob or recent_bear_ob else '⚪'} Supply/Demand Block<br>
+                    {'🔴' if news_events else '🟢'} Fundamental Clearance
+                </div>
+            </div>
+            <div style="margin-top: 25px;">
+                <div class="label">Trade Expiry / Validity</div>
+                <div style="font-size: 18px; color: #FFCC00; font-weight: bold; margin-top: 5px;">{validity}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.info(news_warning)
+    
+    with st.expander("🔍 Developer Mode: View Raw Market Matrix"):
+        st.dataframe(df.tail(15))
