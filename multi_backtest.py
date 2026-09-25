@@ -42,6 +42,7 @@ for category, tickers in ASSETS.items():
             df_1h['SMA50'] = ta.sma(df_1h['Close'], length=50)
             df_1h['SMA200'] = ta.sma(df_1h['Close'], length=200)
             df_1h['ATR'] = ta.atr(df_1h['High'], df_1h['Low'], df_1h['Close'], length=14)
+            df_1h['RSI'] = ta.rsi(df_1h['Close'], length=14)
 
             df_1d_bias = df_1d[['Daily_Bias']].copy()
             df_1d_bias.index = pd.to_datetime(df_1d_bias.index).tz_localize(None).normalize()
@@ -95,22 +96,29 @@ for category, tickers in ASSETS.items():
                 sma50 = row['SMA50']
                 sma200 = row['SMA200']
                 atr = row['ATR']
+                rsi = row['RSI']
                 
                 struct_dir = 1 if price > sma50 and price > sma200 else (-1 if price < sma50 and price < sma200 else 0)
                 
                 if bias == 0 or struct_dir == 0 or bias != struct_dir:
                     continue
                     
-                # Entry Logic (1:3.3 RR)
+                # Strict RSI Pullback Filter (Only buy when RSI is relatively low in a trend, sell when high)
+                if bias == 1 and rsi > 50:
+                    continue
+                if bias == -1 and rsi < 50:
+                    continue
+                    
+                # High-Accuracy Entry Logic (1:1.5 RR - Securing profits early)
                 if bias == 1:
-                    entry = price - (atr * 0.3)
-                    sl_val = entry - (atr * 1.2)
-                    tp_val = entry + (atr * 4.0)
+                    entry = price
+                    sl_val = entry - (atr * 1.5)  # Wider stop to avoid wicks
+                    tp_val = entry + (atr * 2.25) # 1:1.5 ratio
                     active_trade = {'Time': idx, 'Dir': 'Long', 'Entry': entry, 'SL': sl_val, 'TP': tp_val}
                 elif bias == -1:
-                    entry = price + (atr * 0.3)
-                    sl_val = entry + (atr * 1.2)
-                    tp_val = entry - (atr * 4.0)
+                    entry = price
+                    sl_val = entry + (atr * 1.5)
+                    tp_val = entry - (atr * 2.25)
                     active_trade = {'Time': idx, 'Dir': 'Short', 'Entry': entry, 'SL': sl_val, 'TP': tp_val}
 
             wins = len([t for t in trades if t['Result'] == 'Win'])
@@ -119,7 +127,7 @@ for category, tickers in ASSETS.items():
             
             if total > 0:
                 winrate = (wins / total) * 100
-                rr_won = wins * 3.33
+                rr_won = wins * 1.5
                 rr_lost = losses * 1.0
                 net_r = rr_won - rr_lost
                 results.append({
