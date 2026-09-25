@@ -25,13 +25,11 @@ df_1h['SMA50'] = ta.sma(df_1h['Close'], length=50)
 df_1h['SMA200'] = ta.sma(df_1h['Close'], length=200)
 df_1h['ATR'] = ta.atr(df_1h['High'], df_1h['Low'], df_1h['Close'], length=14)
 
-# Map Daily bias to 1H dataframe
 df_1d_bias = df_1d[['Daily_Bias']].copy()
-if df_1d_bias.index.tz is not None:
-    df_1d_bias.index = df_1d_bias.index.tz_localize(None)
-    
-bias_series = pd.Series(df_1h.index.normalize().map(df_1d_bias['Daily_Bias']), index=df_1h.index)
-df_1h['Daily_Bias'] = bias_series.ffill()
+df_1d_bias.index = pd.to_datetime(df_1d_bias.index).tz_localize(None).normalize()
+df_1h_norm = pd.to_datetime(df_1h.index).tz_localize(None).normalize()
+df_1h['Daily_Bias'] = df_1h_norm.map(df_1d_bias['Daily_Bias']).values
+df_1h['Daily_Bias'] = df_1h['Daily_Bias'].ffill()
 
 df_1h.dropna(inplace=True)
 
